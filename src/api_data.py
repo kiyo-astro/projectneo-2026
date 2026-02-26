@@ -16,7 +16,10 @@
 #--------------------------------------------------------------------------------------------------#
 import requests
 from astropy.table import Table
+import astropy.units as u
 import re
+
+from typing import Dict, List, Tuple
 
 #--------------------------------------------------------------------------------------------------#
 # Global constants                                                                                 #
@@ -347,6 +350,156 @@ def parse_ESA_AEGIS_data(
         ))
 
     return Table(rows=rows, names=names, dtype=[object]*len(names))
+
+def retrieve_ESA_AEGIS_NEA_cat():
+    """
+    Retrieve catalogue of NEAs including their Keplerian orbital elements 
+
+    Returns
+    -------
+    query_result: `str`
+        Asteroids risk list
+
+    Notes
+    -----
+        (c) 2026 Kiyoaki Okudaira - University of Washington
+    """
+
+    r = requests.get(ESA_AEGIS_API_ROOT + "?file=neo_kc.cat")
+    r.raise_for_status()
+    query_result = r.text
+
+    if "error" in query_result:
+        raise RuntimeError(f"Sentry API error: {query_result['error']}")
+
+    return query_result
+
+def parse_ESA_AEGIS_NEA_cat(
+    text: str,
+    strict: bool = True,
+    add_units: bool = True,
+) -> Tuple[Table, Dict[str, str]]:
+    """
+    Parse asteroids catalogue of NEAs and return data with astropy Table format
+
+    Parameters
+    ----------
+    text : str
+        Raw text content downloaded from ESA AEGIS.
+    strict : bool, default True
+        If True, raise ValueError on malformed data lines.
+        If False, skip malformed lines.
+    add_units : bool, default True
+        If True, attach common units to columns (a in AU, angles in deg, epoch in d).
+
+    Returns
+    -------
+    table : astropy.table.Table
+        Parsed table.
+    header_kv : dict
+        Key/value pairs parsed from header lines like "key = value ! comment".
+    """
+    lines = text.splitlines()
+
+    # ---- split header / body ----
+    header_kv: Dict[str, str] = {}
+    body_start = None
+    for idx, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:
+            continue
+        if line == "END_OF_HEADER":
+            body_start = idx + 1
+            break
+        if line.startswith("!"):
+            continue
+        # Parse "key = value" (optionally followed by "! comment")
+        if "=" in line:
+            left, right = line.split("=", 1)
+            key = left.strip()
+            val = right.split("!", 1)[0].strip()
+            if key:
+                header_kv[key] = val
+
+    if body_start is None:
+        raise ValueError("END_OF_HEADER not found in text.")
+
+    # ---- prepare columns ----
+    names = [
+        "name",
+        "epoch_mjd",
+        "a_au",
+        "e",
+        "i_deg",
+        "raan_deg",   # long. node
+        "aop_deg",    # arg. peric.
+        "M_deg",      # mean anomaly
+        "H",
+        "G",
+        "nongrav",
+    ]
+
+    rows: List[tuple] = []
+    bad_lines: List[str] = []
+
+    for raw in lines[body_start:]:
+        line = raw.strip()
+        if (not line) or line.startswith("!"):
+            continue
+
+        parts = line.split()
+        if len(parts) < 11:
+            msg = f"Malformed data line (expected >=11 fields, got {len(parts)}): {line}"
+            if strict:
+                raise ValueError(msg)
+            bad_lines.append(line)
+            continue
+
+        # take first 11 fields; if extra tokens exist, ignore them
+        parts = parts[:11]
+
+        try:
+            row = (
+                parts[0],           # name (string)
+                float(parts[1]),    # epoch mjd
+                float(parts[2]),    # a (AU)
+                float(parts[3]),    # e
+                float(parts[4]),    # i (deg)
+                float(parts[5]),    # long. node (deg)
+                float(parts[6]),    # arg. peric. (deg)
+                float(parts[7]),    # mean anomaly (deg)
+                float(parts[8]),    # H
+                float(parts[9]),    # G
+                float(parts[10]),   # non-grav param (often 0)
+            )
+            rows.append(row)
+        except Exception as e:
+            msg = f"Failed to parse line: {line} ({e})"
+            if strict:
+                raise ValueError(msg)
+            bad_lines.append(line)
+
+    tbl = Table(rows=rows, names=names)
+
+    if add_units:
+        # These are "display/metadata" units; values remain plain floats in the table.
+        tbl["epoch_mjd"].unit = u.d
+        tbl["a_au"].unit = u.AU
+        tbl["i_deg"].unit = u.deg
+        tbl["raan_deg"].unit = u.deg
+        tbl["aop_deg"].unit = u.deg
+        tbl["M_deg"].unit = u.deg
+        # H, G are dimensionless; nongrav could be something else depending on format,
+        # but typically 0 in your sample so leave as dimensionless.
+
+    # If you want to keep track of skipped lines in non-strict mode:
+    if (not strict) and bad_lines:
+        tbl.meta["skipped_lines"] = bad_lines
+
+    # Also store header info in meta
+    tbl.meta.update(header_kv)
+
+    return tbl, header_kv
 
 #--------------------------------------------------------------------------------------------------#
 # Test                                                                                             #
