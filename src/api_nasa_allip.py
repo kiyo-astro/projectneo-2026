@@ -1,9 +1,5 @@
 import requests
-import time
-import numpy as np
-import re
-from astropy.table import QTable, vstack
-from astropy import units as u
+from astropy.table import QTable
 
 def get_sentry_asteroids():
     # The default URL returns the summary list of all available Sentry objects
