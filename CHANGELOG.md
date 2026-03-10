@@ -87,3 +87,14 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - None
+
+## 2025-03-09
+
+### Added
+- Palermo scale plot
+ 
+### Changed
+- vinf_comparsion, added diameter section
+
+### Fixed
+- None
